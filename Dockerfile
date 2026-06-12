@@ -5,6 +5,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# NUEVA LÍNEA: Esto fuerza a que se instalen los navegadores correctos con sus dependencias de Linux
+RUN playwright install --with-deps chromium
+
 COPY . .
 
 EXPOSE 10000
