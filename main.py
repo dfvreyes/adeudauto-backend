@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import httpx
+import requests
 from bs4 import BeautifulSoup
 import base64
 
@@ -16,7 +16,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-sesiones_activas = {}
+# Diccionario para guardar las sesiones de cookies activas
+sesiones_cookies = {}
 
 class ConsultaVeracruzRequest(BaseModel):
     session_id: str
@@ -25,120 +26,91 @@ class ConsultaVeracruzRequest(BaseModel):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "API de Veracruz Activa (Modo Inteligente)"}
+    return {"status": "ok", "message": "API Veracruz - Formulario Analizado"}
 
 @app.get("/api/veracruz/captcha")
 async def obtener_captcha_veracruz():
-    """ Lee dinámicamente la página de Veracruz, encuentra el captcha real y lo descarga """
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-        "Accept-Language": "es-MX,es;q=0.8,en-US;q=0.5,en;q=0.3"
-    }
-    
-    client = httpx.AsyncClient(headers=headers, timeout=30.0, follow_redirects=True)
+    """ Abre la sesión oficial y extrae el jcaptcha exacto de la OVH """
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    })
     
     try:
-        # 1. Entrar a la página principal de consulta
+        # 1. Petición inicial para activar las cookies del gobierno
         url_principal = "https://ovh.veracruz.gob.mx/ovh/consultavehicular"
-        response = await client.get(url_principal)
+        session.get(url_principal, timeout=15)
         
-        # 2. Parsear el HTML para buscar la etiqueta <img> del captcha real
-        soup = BeautifulSoup(response.text, "html.parser")
+        # 2. Descargar la imagen del captcha con la cookie activa
+        url_captcha = "https://ovh.veracruz.gob.mx/ovh/jcaptcha"
+        captcha_res = session.get(url_captcha, timeout=15)
         
-        # Buscamos cualquier imagen que apunte a 'captcha' o 'jcaptcha'
-        img_tag = soup.find("img", src=lambda x: x and ("captcha" in x.lower() or "jcaptcha" in x.lower()))
-        
-        # Si no la encuentra por nombre, buscamos la imagen que está dentro del formulario vehicular
-        if not img_tag:
-            form = soup.find("form")
-            if form:
-                img_tag = form.find("img")
-                
-        if not img_tag or not img_tag.get("src"):
-            await client.aclose()
-            raise HTTPException(status_code=500, detail="El sitio de Veracruz cambió la estructura del formulario.")
+        if captcha_res.status_code != 200:
+            raise HTTPException(status_code=500, detail="La OVH de Veracruz denegó la imagen del captcha.")
             
-        src_captcha = img_tag["src"]
+        # Convertir los bytes de la imagen a texto Base64
+        captcha_base64 = base64.b64encode(captcha_res.content).decode('utf-8')
         
-        # Construir la URL absoluta del captcha
-        if src_captcha.startswith("http"):
-            url_captcha = src_captcha
-        else:
-            # Si es una ruta relativa (ej: /ovh/jcaptcha), la unimos a la base
-            base_url = "https://ovh.veracruz.gob.mx"
-            if not src_captcha.startswith("/"):
-                src_captcha = "/" + src_captcha
-            url_captcha = f"{base_url}{src_captcha}"
-            
-        # 3. Descargar la imagen usando la misma sesión de cookies
-        captcha_response = await client.get(url_captcha)
-        
-        if captcha_response.status_code != 200:
-            await client.aclose()
-            raise HTTPException(status_code=500, detail="No se pudo descargar la imagen del captcha desde la OVH.")
-            
-        # Convertir a Base64
-        captcha_base64 = base64.b64encode(captcha_response.content).decode('utf-8')
-        
-        session_id = str(id(client))
-        sesiones_activas[session_id] = client
+        # Guardar la sesión viva en memoria
+        session_id = str(id(session))
+        sesiones_cookies[session_id] = session
         
         return {
             "session_id": session_id,
             "captcha_image": f"data:image/png;base64,{captcha_base64}"
         }
         
-    except HTTPException as he:
-        raise he
     except Exception as e:
-        await client.aclose()
-        raise HTTPException(status_code=500, detail=f"Error al conectar con la OVH: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Fallo al mapear el Captcha de Veracruz: {str(e)}")
 
 @app.post("/api/veracruz/consultar")
 async def consultar_veracruz(req: ConsultaVeracruzRequest):
-    """ Envía los datos simulando el formulario y extrae la tabla final """
-    client = sesiones_activas.get(req.session_id)
-    if not client:
-        raise HTTPException(status_code=400, detail="Sesión inválida o vencida. Recarga el modal.")
+    """ Envía los parámetros reales analizados del formulario de Veracruz """
+    session = sesiones_cookies.get(req.session_id)
+    if not session:
+        raise HTTPException(status_code=400, detail="La sesión expiró. Recarga el captcha de nuevo.")
         
     try:
-        # Enviamos los parámetros exactos del formulario de SEFIPLAN
+        # PARÁMETROS REALES DEL FORMULARIO DE VERACRUZ: pPlaca y pTextoSeguridad
         payload = {
-            "placa": req.placa.upper().strip(),
-            "captcha": req.captcha_texto.strip(),
-            "botonsubmit": "Consultar"
+            "pPlaca": req.placa.upper().strip(),
+            "pTextoSeguridad": req.captcha_texto.strip()
         }
         
         url_post = "https://ovh.veracruz.gob.mx/ovh/consultavehicular"
-        response = await client.post(url_post, data=payload)
+        response = session.post(url_post, data=payload, timeout=20)
         
         soup = BeautifulSoup(response.text, "html.parser")
-        texto_pagina = soup.get_text()
+        texto_completo = soup.get_text()
         
-        if "incorrecto" in texto_pagina.lower() or "error" in texto_pagina.lower():
-            raise HTTPException(status_code=400, detail="El texto de seguridad es incorrecto o expiró.")
+        # Validación de errores devueltos por la OVH
+        if "Texto de seguridad incorrecto" in texto_completo:
+            raise HTTPException(status_code=400, detail="El código de seguridad ingresado es incorrecto.")
             
-        datos_vehiculo = "No identificado"
+        datos_vehiculo = "No identificado o sin registro en Veracruz"
         monto_adeudo = "$0.00"
         
-        # Raspado inteligente buscando filas de texto
-        for row in soup.find_all("tr"):
-            celdas = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
-            if len(celdas) >= 2:
-                texto_unido = " ".join(celdas)
-                if "Vehículo" in texto_unido or "Modelo" in texto_unido:
-                    datos_vehiculo = celdas[1]
-                if "Total" in texto_unido or "Adeudo" in texto_unido or "Pagar" in texto_unido:
-                    monto_adeudo = celdas[1]
-                    
-        # Si no lo encuentra en tablas, buscamos por texto plano bruto
-        if datos_vehiculo == "No identificado":
-            for linea in texto_pagina.split("\n"):
-                if "Vehículo:" in linea:
-                    datos_vehiculo = linea.replace("Vehículo:", "").strip()
-                if "Total a Pagar:" in linea:
-                    monto_adeudo = linea.replace("Total a Pagar:", "").strip()
+        # Buscamos en el HTML las etiquetas específicas donde Veracruz plasma los resultados
+        # Buscamos la tabla con la clase o textos clave que viste en tu consulta exitosa
+        for td in soup.find_all("td"):
+            texto_td = td.get_text(strip=True)
+            if "Vehículo:" in texto_td or "Vehiculo:" in texto_td:
+                datos_vehiculo = texto_td.replace("Vehículo:", "").replace("Vehiculo:", "").strip()
+                
+        # Extraer el monto total de la tabla de adeudos
+        for span in soup.find_all(["span", "td", "th"]):
+            texto_span = span.get_text(strip=True)
+            if "Total a Pagar" in texto_span or "Total:" in texto_span:
+                # Intentamos agarrar el elemento de al lado o el texto directo
+                monto_adeudo = texto_span.split(":")[-1].strip()
+
+        # Si el raspado por etiquetas falla, usamos la búsqueda por líneas brutas de respaldo
+        if datos_vehiculo == "No identificado o sin registro en Veracruz":
+            for linea in texto_completo.split("\n"):
+                if "Vehículo" in linea or "Descripción" in linea:
+                    datos_vehiculo = linea.strip()
+                if "Total a Pagar" in linea or "Adeudo" in linea:
+                    monto_adeudo = linea.strip()
 
         return {
             "placa": req.placa.upper(),
@@ -150,8 +122,8 @@ async def consultar_veracruz(req: ConsultaVeracruzRequest):
     except HTTPException as he:
         raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al procesar los adeudos: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error al extraer los datos finales: {str(e)}")
     finally:
-        await client.aclose()
-        if req.session_id in sesiones_activas:
-            del sesiones_activas[req.session_id]
+        # Cerramos la sesión para no dejar procesos colgados en Render
+        if req.session_id in sesiones_cookies:
+            del sesiones_cookies[req.session_id]
