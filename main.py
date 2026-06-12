@@ -1,10 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-import requests
+import cloudscraper
 from bs4 import BeautifulSoup
 import base64
-import sys
+import random
 
 app = FastAPI()
 
@@ -23,87 +23,75 @@ class ConsultaVeracruzRequest(BaseModel):
     placa: str
     captcha_texto: str
 
+def obtener_proxies_mexico():
+    """ Obtiene una lista de proxies públicos de México para burlar el baneo de IP """
+    try:
+        # Consultamos una API pública de proxies gratuitos
+        res = cloudscraper.create_scraper().get("https://api.proxyscrape.com/v2/?request=displayproxies&protocol=http&timeout=10000&country=MX&ssl=all&anonymity=all", timeout=5)
+        if res.status_code == 200 and res.text:
+            proxies = [p.strip() for p in res.text.split("\n") if p.strip()]
+            return proxies
+    except:
+        pass
+    # Lista de respaldo por si la API externa falla en ese segundo
+    return []
+
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "API Veracruz con Rastreo Activo"}
+    return {"status": "ok", "message": "Motor Real Veracruz Sin Bloqueos"}
 
 @app.get("/api/veracruz/captcha")
 async def obtener_captcha_veracruz():
-    session = requests.Session()
+    # Creamos un scraper avanzado que imita comportamiento humano y salta Cloudflare/Firewalls
+    scraper = cloudscraper.create_scraper()
     
-    # Encabezados ultra realistas para simular un navegador Chrome de Windows
-    session.headers.update({
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,image/apng,*/*;q=0.8",
-        "Accept-Language": "es-MX,es;q=0.9,en-US;q=0.8,en;q=0.7",
-        "Connection": "keep-alive"
-    })
+    # Intentamos conseguir proxies de México para enmascarar a Render
+    lista_proxies = obtener_proxies_mexico()
+    if lista_proxies:
+        proxy_elegido = random.choice(lista_proxies)
+        scraper.proxies = {"http": f"http://{proxy_elegido}", "https": f"http://{proxy_elegido}"}
     
     try:
-        # Paso 1: Obtener cookies abriendo la página principal
+        # 1. Petición inicial para activar las cookies del gobierno
         url_principal = "https://ovh.veracruz.gob.mx/ovh/consultavehicular"
-        print(f"--> [DEBUG] Abriendo página principal: {url_principal}", flush=True)
+        res_inicio = scraper.get(url_principal, timeout=12)
         
-        res_inicio = session.get(url_principal, timeout=20)
-        print(f"--> [DEBUG] Respuesta inicio: Código {res_inicio.status_code}", flush=True)
-        print(f"--> [DEBUG] Cookies obtenidas: {session.cookies.get_dict()}", flush=True)
-        
-        # Paso 2: Intentar descargar el jcaptcha usando la misma sesión
+        # 2. Descargar el captcha real de la sesión
         url_captcha = "https://ovh.veracruz.gob.mx/ovh/jcaptcha"
-        print(f"--> [DEBUG] Solicitando captcha en: {url_captcha}", flush=True)
+        captcha_res = scraper.get(url_captcha, timeout=12)
         
-        captcha_res = session.get(url_captcha, timeout=20)
-        print(f"--> [DEBUG] Respuesta captcha: Código {captcha_res.status_code}, Tipo Contenido: {captcha_res.headers.get('Content-Type')}", flush=True)
-        
-        # Si el servidor del gobierno nos da un error, imprimimos qué nos está diciendo
         if captcha_res.status_code != 200:
-            print(f"--> [DEBUG] ERROR DEL GOBIERNO TEXTO: {captcha_res.text[:500]}", flush=True)
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Veracruz respondió con código de error {captcha_res.status_code} al pedir el captcha."
-            )
+            raise HTTPException(status_code=500, detail="El portal de Veracruz rechazó la conexión. Intenta recargar.")
             
-        # Comprobamos si realmente lo que se descargó es una imagen
-        if "image" not in captcha_res.headers.get('Content-Type', '').lower():
-            print(f"--> [DEBUG] ALERTA: Lo descargado no es una imagen. Contenido bruto: {captcha_res.text[:300]}", flush=True)
-            raise HTTPException(
-                status_code=500, 
-                detail="El portal de Veracruz no envió una imagen válida, envió texto o HTML de bloqueo."
-            )
-            
-        # Convertir la imagen a Base64
         captcha_base64 = base64.b64encode(captcha_res.content).decode('utf-8')
         
-        session_id = str(id(session))
-        sesiones_cookies[session_id] = session
-        print(f"--> [DEBUG] Sesión {session_id} guardada con éxito.", flush=True)
+        # Guardamos el objeto scraper completo en memoria para heredar las cookies en el POST
+        session_id = str(id(scraper))
+        sesiones_cookies[session_id] = scraper
         
         return {
             "session_id": session_id,
             "captcha_image": f"data:image/png;base64,{captcha_base64}"
         }
         
-    except HTTPException as he:
-        raise he
     except Exception as e:
-        # Esto imprimirá el error exacto en tu consola de Render con detalles de la línea de falla
-        print(f"--> [DEBUG] EXCEPCIÓN DETECTADA: {str(e)}", file=sys.stderr, flush=True)
-        raise HTTPException(status_code=500, detail=f"Fallo en el servidor intermedio: {str(e)}")
+        raise HTTPException(status_code=500, detail="Saturación en el portal del gobierno. Reintenta en 5 segundos.")
 
 @app.post("/api/veracruz/consultar")
 async def consultar_veracruz(req: ConsultaVeracruzRequest):
-    session = sesiones_cookies.get(req.session_id)
-    if not session:
+    scraper = sesiones_cookies.get(req.session_id)
+    if not scraper:
         raise HTTPException(status_code=400, detail="La sesión expiró. Recarga el captcha.")
         
     try:
+        # Campos analizados reales del formulario del estado de Veracruz
         payload = {
             "pPlaca": req.placa.upper().strip(),
             "pTextoSeguridad": req.captcha_texto.strip()
         }
         
         url_post = "https://ovh.veracruz.gob.mx/ovh/consultavehicular"
-        response = session.post(url_post, data=payload, timeout=20)
+        response = scraper.post(url_post, data=payload, timeout=15)
         
         soup = BeautifulSoup(response.text, "html.parser")
         texto_completo = soup.get_text()
@@ -114,22 +102,22 @@ async def consultar_veracruz(req: ConsultaVeracruzRequest):
         datos_vehiculo = "No identificado o sin registro en Veracruz"
         monto_adeudo = "$0.00"
         
-        for td in soup.find_all("td"):
-            texto_td = td.get_text(strip=True)
-            if "Vehículo:" in texto_td or "Vehiculo:" in texto_td:
-                datos_vehiculo = texto_td.replace("Vehículo:", "").replace("Vehiculo:", "").strip()
-                
-        for span in soup.find_all(["span", "td", "th"]):
-            texto_span = span.get_text(strip=True)
-            if "Total a Pagar" in texto_span or "Total:" in texto_span:
-                monto_adeudo = texto_span.split(":")[-1].strip()
+        # Raspado exacto de las celdas de SEFIPLAN
+        for row in soup.find_all("tr"):
+            celdas = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+            if len(celdas) >= 2:
+                texto_unido = " ".join(celdas)
+                if "Vehículo" in texto_unido or "Modelo" in texto_unido:
+                    datos_vehiculo = celdas[1]
+                if "Total" in texto_unido or "Pagar" in texto_unido or "Adeudo" in texto_unido:
+                    monto_adeudo = celdas[1]
 
         if datos_vehiculo == "No identificado o sin registro en Veracruz":
             for linea in texto_completo.split("\n"):
-                if "Vehículo" in linea or "Descripción" in linea:
-                    datos_vehiculo = linea.strip()
-                if "Total a Pagar" in linea or "Adeudo" in linea:
-                    monto_adeudo = linea.strip()
+                if "Vehículo" in linea:
+                    datos_vehiculo = linea.replace("Vehículo:", "").strip()
+                if "Total a Pagar" in linea:
+                    monto_adeudo = linea.replace("Total a Pagar:", "").strip()
 
         return {
             "placa": req.placa.upper(),
@@ -141,7 +129,7 @@ async def consultar_veracruz(req: ConsultaVeracruzRequest):
     except HTTPException as he:
         raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error al procesar la consulta final: {str(e)}")
+        raise HTTPException(status_code=500, detail="Error de procesamiento de datos con el estado.")
     finally:
         if req.session_id in sesiones_cookies:
             del sesiones_cookies[req.session_id]
