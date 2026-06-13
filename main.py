@@ -9,10 +9,11 @@ import urllib.parse
 app = FastAPI()
 
 # Permitir conexiones desde tu frontend en Lovable
+# Permitir conexiones desde tu frontend en Lovable
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,  # <--- CAMBIADO A FALSE para solucionar el error CORS con el "*"
     allow_methods=["*"],
     allow_headers=["*"],
 )
