@@ -10,13 +10,30 @@ app = FastAPI()
 
 # Permitir conexiones desde tu frontend en Lovable
 # Permitir conexiones desde tu frontend en Lovable
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,  # <--- CAMBIADO A FALSE para solucionar el error CORS con el "*"
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+from fastapi import FastAPI, HTTPException, Request, Response
+# ... conserva tus otros imports arriba (base64, requests, etc.) ...
+
+app = FastAPI()
+
+# 🛡️ MOTOR INDESTRUCTIBLE CONTRA CORS (Reemplaza el bloque viejo con esto)
+@app.middleware("http")
+async def interceptor_cors_seguro(request: Request, call_next):
+    # Si el navegador envía una petición de reconocimiento (OPTIONS), le respondemos con éxito inmediato
+    if request.method == "OPTIONS":
+        response = Response()
+    else:
+        response = await call_next(request)
+    
+    # Leemos la URL exacta desde donde Lovable está llamando
+    origen_solicitante = request.headers.get("origin", "*")
+    
+    # Inyectamos los encabezados espejo que desarman cualquier bloqueo del navegador
+    response.headers["Access-Control-Allow-Origin"] = origen_solicitante
+    response.headers["Access-Control-Allow-Credentials"] = "true"
+    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
+    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Accept"
+    
+    return response
 
 # 🔑 COLOCA AQUÍ TU API KEY REAL DE SCRAPINGBEE
 SCRAPINGBEE_API_KEY = "YXCMEMCHIH28ATRP4YVX4RK3J0P9DR3EYAR622BAH9JATN16PLPPP84LDZ6V487NK6JKOR9S0F14WARV"
