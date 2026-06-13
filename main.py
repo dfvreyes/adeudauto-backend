@@ -18,7 +18,7 @@ app.add_middleware(
 )
 
 # 🔑 COLOCA AQUÍ TU API KEY REAL DE SCRAPINGBEE
-SCRAPINGBEE_API_KEY = "TU_API_KEY_AQUI"
+SCRAPINGBEE_API_KEY = "YXCMEMCHIH28ATRP4YVX4RK3J0P9DR3EYAR622BAH9JATN16PLPPP84LDZ6V487NK6JKOR9S0F14WARV"
 
 # Memoria centralizada ultra-segura (Guardamos diccionarios de texto, no objetos mutables)
 sesiones_globales = {}
