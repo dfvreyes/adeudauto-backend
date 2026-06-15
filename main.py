@@ -3,209 +3,177 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import requests
 from bs4 import BeautifulSoup
-import json
-import base64
-import time
+import json, time, random, urllib.parse
 
 app = FastAPI()
 
-# 🔑 COLOCA AQUÍ TU API KEY REAL DE SCRAPINGBEE
 SCRAPINGBEE_API_KEY = "YXCMEMCHIH28ATRP4YVX4RK3J0P9DR3EYAR622BAH9JATN16PLPPP84LDZ6V487NK6JKOR9S0F14WARV"
+SPB = "https://app.scrapingbee.com/api/v1/"
+URL_OVH = "https://ovh.veracruz.gob.mx/ovh/consultavehicular"
 
-sesiones_globales = {}
+sesiones_globales = {}  # session_id local -> {"spb_session": int, "cookies": str}
 
 class ConsultaEstadoRequest(BaseModel):
-    session_id: str = None
-    sessionId: str = None
+    session_id: str | None = None
+    sessionId: str | None = None
     placa: str
-    captcha_texto: str = None
-    captchaTexto: str = None
+    captcha_texto: str | None = None
+    captchaTexto: str | None = None
 
 @app.middleware("http")
-async def cors_interceptor_universal(request: Request, call_next):
+async def cors(request: Request, call_next):
     if request.method == "OPTIONS":
-        response = Response(status_code=204)
-        origin = request.headers.get("origin", "*")
-        response.headers["Access-Control-Allow-Origin"] = origin
-        response.headers["Access-Control-Allow-Credentials"] = "true"
-        response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
-        response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Accept"
-        return response
-
-    try:
-        response = await call_next(request)
-    except Exception as e:
-        response = JSONResponse(
-            status_code=500,
-            content={"status": "error", "detail": f"Falla interna: {str(e)}"}
-        )
-
+        r = Response(status_code=204)
+    else:
+        try:
+            r = await call_next(request)
+        except Exception as e:
+            r = JSONResponse(status_code=500, content={"detail": f"Falla interna: {e}"})
     origin = request.headers.get("origin", "*")
-    response.headers["Access-Control-Allow-Origin"] = origin
-    response.headers["Access-Control-Allow-Credentials"] = "true"
-    response.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS, PUT, DELETE"
-    response.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, X-Requested-With, Accept"
-    return response
+    r.headers["Access-Control-Allow-Origin"] = origin
+    r.headers["Access-Control-Allow-Credentials"] = "true"
+    r.headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS"
+    r.headers["Access-Control-Allow-Headers"] = "Content-Type, Authorization, Accept"
+    return r
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "Servidor Centralizado - Extractor por Canvas Activo"}
+    return {"status": "ok"}
 
+def _extract_evaluate_result(headers) -> str | None:
+    """ScrapingBee devuelve el resultado del evaluate en Spb-Js-Scenario-Report (JSON)."""
+    report = headers.get("Spb-Js-Scenario-Report") or headers.get("spb-js-scenario-report")
+    if not report:
+        return None
+    try:
+        data = json.loads(report)
+        for task in data.get("tasks", []):
+            if task.get("task") == "evaluate" and task.get("result"):
+                return task["result"]
+    except Exception:
+        return None
+    return None
+
+def _extract_spb_cookies(headers) -> str:
+    """ScrapingBee devuelve las cookies del sitio destino en Spb-Cookies."""
+    return headers.get("Spb-Cookies") or headers.get("spb-cookies") or ""
 
 @app.get("/api/veracruz/captcha")
 async def captcha_veracruz():
-    if SCRAPINGBEE_API_KEY == "TU_API_KEY_AQUI" or not SCRAPINGBEE_API_KEY:
-        raise HTTPException(status_code=500, detail="Falta la API Key de ScrapingBee.")
+    spb_session = random.randint(100000, 999999)
 
-    url_principal = "https://ovh.veracruz.gob.mx/ovh/consultavehicular"
-    spb_endpoint = "https://app.scrapingbee.com/api/v1/"
-    
-    # 🎭 ESCENARIO JAVASCRIPT: Le ordenamos al navegador invisible de ScrapingBee 
-    # que dibuje la imagen del captcha en un lienzo virtual (Canvas) y extraiga el Base64 puro.
-    # Así evitamos hacer la segunda petición que bloquea Radware.
-    instrucciones_js = {
+    js_scenario = {
         "instructions": [
-            {"wait_for": "img[src*='jcaptcha']"}, # Espera a que la imagen del captcha aparezca en pantalla
-            {"wait": 2000}, # Espera 2 segundos extra para asegurar que se rendericen los píxeles
-            {
-                "evaluate": """
-                (() => {
-                    var img = document.querySelector("img[src*='jcaptcha']");
-                    if (!img) return "ERROR: No se encontro el elemento img del captcha";
-                    
-                    var canvas = document.createElement("canvas");
-                    canvas.width = img.naturalWidth || img.width;
-                    canvas.height = img.naturalHeight || img.height;
-                    
-                    var ctx = canvas.getContext("2d");
-                    ctx.drawImage(img, 0, 0);
-                    
-                    return canvas.toDataURL("image/png");
-                })()
-                """
-            }
+            {"wait_for": "img[src*='jcaptcha']"},
+            {"wait": 1500},
+            {"evaluate": (
+                "(() => {"
+                "  var img = document.querySelector(\"img[src*='jcaptcha']\");"
+                "  if (!img) return 'ERR_NO_IMG';"
+                "  var c = document.createElement('canvas');"
+                "  c.width = img.naturalWidth || img.width || 200;"
+                "  c.height = img.naturalHeight || img.height || 50;"
+                "  c.getContext('2d').drawImage(img, 0, 0);"
+                "  return c.toDataURL('image/png');"
+                "})()"
+            )},
         ]
     }
-    
+
+    params = {
+        "api_key": SCRAPINGBEE_API_KEY,
+        "url": URL_OVH,
+        "country_code": "mx",
+        "render_js": "true",
+        "premium_proxy": "true",
+        "stealth_proxy": "true",   # extra anti-Radware
+        "session_id": spb_session, # MISMA IP en la 2da llamada
+        "js_scenario": json.dumps(js_scenario),
+        "return_page_source": "true",
+    }
+
     try:
-        params_inicio = {
-            "api_key": SCRAPINGBEE_API_KEY,
-            "url": url_principal,
-            "country_code": "mx",
-            "render_js": "true",          # Abre navegador realheadless
-            "premium_proxy": "true",       # Forzar IPs residenciales limpias de alta reputación
-            "js_scenario": json.dumps(instrucciones_js), # Inyectamos nuestro script extractor de pixeles
-            "forward_headers": "true"
-        }
-        
-        # Esta consulta puede tardar de 15 a 25 segundos ya que ScrapingBee abre el sitio entero
-        res_inicio = requests.get(spb_endpoint, params=params_inicio, timeout=55)
-        
-        # Validamos si Radware bloqueó el navegador antes del script
-        if b"Radware Captcha Page" in res_inicio.content or b"hcaptcha" in res_inicio.content:
-            raise HTTPException(status_code=503, detail="Radware bloqueó el navegador simulado. Reintenta la consulta.")
+        res = requests.get(SPB, params=params, timeout=120)
+    except requests.Timeout:
+        raise HTTPException(502, "ScrapingBee timeout cargando OVH. Reintenta.")
 
-        # Buscamos la respuesta de nuestro script JS en los headers especiales de ScrapingBee
-        captcha_base64_puro = res_inicio.headers.get("X-ScrapingBee-Js-Scenario-Result")
-        
-        # Fallback: Si no vino en el header, buscamos si ScrapingBee la escupió en el cuerpo de la respuesta JSON
-        if not captcha_base64_puro:
-            try:
-                datos_json = res_inicio.json()
-                captcha_base64_puro = datos_json.get("js_scenario", {}).get("result")
-            except:
-                pass
+    if res.status_code >= 400:
+        raise HTTPException(502, f"ScrapingBee {res.status_code}: {res.text[:200]}")
 
-        if not captcha_base64_puro or "ERROR" in str(captcha_base64_puro) or "data:image" not in str(captcha_base64_puro):
-            raise HTTPException(status_code=502, detail="No se pudo extraer los pixeles del captcha. Reintenta la recarga.")
+    captcha_b64 = _extract_evaluate_result(res.headers)
+    if not captcha_b64 or "data:image" not in captcha_b64:
+        raise HTTPException(502, f"No se obtuvo el captcha (evaluate vacío). Headers report: {res.headers.get('Spb-Js-Scenario-Report','')[:300]}")
 
-        # Recolectamos las cookies vivas de la sesión para poder hacer la consulta posterior
-        cookies_dict = {}
-        if res_inicio.cookies:
-            for cookie in res_inicio.cookies:
-                cookies_dict[cookie.name] = cookie.value
-                
-        session_id = str(int(time.time()))
-        sesiones_globales[session_id] = cookies_dict
-        
-        return {
-            "session_id": session_id,
-            "sessionId": session_id,
-            "captcha_image": captcha_base64_puro, # Ya viene con el formato "data:image/png;base64,..."
-            "captchaImage": captcha_base64_puro
-        }
-        
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Falla en extracción por Canvas: {str(e)}")
+    spb_cookies = _extract_spb_cookies(res.headers)
+    session_id = str(int(time.time() * 1000))
+    sesiones_globales[session_id] = {"spb_session": spb_session, "cookies": spb_cookies}
 
+    return {
+        "session_id": session_id, "sessionId": session_id,
+        "captcha_image": captcha_b64, "captchaImage": captcha_b64,
+    }
 
 @app.post("/api/veracruz/consultar")
 async def consultar_veracruz(req: ConsultaEstadoRequest):
-    id_sesion = req.session_id or req.sessionId
-    texto_captcha = req.captcha_texto or req.captchaTexto
-    
-    cookies = sesiones_globales.get(id_sesion)
-    if not cookies:
-        raise HTTPException(status_code=400, detail="Sesión expirada. Recarga el captcha.")
-        
-    url_post = "https://ovh.veracruz.gob.mx/ovh/consultavehicular"
-    spb_endpoint = "https://app.scrapingbee.com/api/v1/"
-    
-    try:
-        payload = {
-            "pPlaca": req.placa.upper().strip(),
-            "pTextoSeguridad": texto_captcha.strip() if texto_captcha else ""
-        }
-        payload_encoded = urllib.parse.urlencode(payload)
-        cookie_string = "; ".join([f"{k}={v}" for k, v in cookies.items()])
-        
-        params_post = {
-            "api_key": SCRAPINGBEE_API_KEY,
-            "url": url_post,
-            "country_code": "mx",
-            "render_js": "true",
-            "premium_proxy": "true",
-            "forward_headers": "true"
-        }
-        
-        headers_post = {
-            "Cookie": cookie_string,
-            "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        
-        response = requests.post(spb_endpoint, params=params_post, headers=headers_post, data=payload_encoded, timeout=50)
-        
-        if b"Radware" in response.content:
-            raise HTTPException(status_code=502, detail="Radware interceptó el envío del formulario.")
-            
-        soup = BeautifulSoup(response.text, "html.parser")
-        texto_completo = soup.get_text()
-        
-        if "Texto de seguridad incorrecto" in texto_completo:
-            raise HTTPException(status_code=400, detail="El captcha ingresado es incorrecto.")
-            
-        datos_vehiculo = "Vehículo sin adeudos o no registrado en Veracruz"
-        monto_adeudo = "$0.00"
-        
-        for row in soup.find_all("tr"):
-            celdas = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
-            if len(celdas) >= 2:
-                texto_unido = " ".join(celdas)
-                if "Vehículo" in texto_unido or "Modelo" in texto_unido:
-                    datos_vehiculo = celdas[1]
-                if "Total" in texto_unido or "Pagar" in texto_unido:
-                    monto_adeudo = celdas[1]
+    sid = req.session_id or req.sessionId
+    captcha = (req.captcha_texto or req.captchaTexto or "").strip()
+    sess = sesiones_globales.get(sid)
+    if not sess:
+        raise HTTPException(400, "Sesión expirada. Recarga el captcha.")
 
-        return {
-            "placa": req.placa.upper(),
-            "vehiculo": datos_vehiculo,
-            "adeudo": monto_adeudo,
-            "estado": "Veracruz"
-        }
-    except HTTPException as he:
-        raise he
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en procesamiento final: {str(e)}")
+    placa = req.placa.upper().strip()
+
+    # Llenamos los inputs y enviamos el form DENTRO del mismo navegador donde se generó el captcha.
+    js_scenario = {
+        "instructions": [
+            {"wait_for": "input[name='pPlaca']"},
+            {"evaluate": (
+                f"document.querySelector(\"input[name='pPlaca']\").value = '{placa}';"
+                f"document.querySelector(\"input[name='pTextoSeguridad']\").value = '{captcha}';"
+                "''"
+            )},
+            {"click": "input[type='submit'], button[type='submit']"},
+            {"wait": 3500},
+        ]
+    }
+
+    params = {
+        "api_key": SCRAPINGBEE_API_KEY,
+        "url": URL_OVH,
+        "country_code": "mx",
+        "render_js": "true",
+        "premium_proxy": "true",
+        "stealth_proxy": "true",
+        "session_id": sess["spb_session"],   # MISMA IP/sesión que el GET
+        "js_scenario": json.dumps(js_scenario),
+        "return_page_source": "true",
+    }
+    headers_req = {}
+    if sess["cookies"]:
+        headers_req["Spb-Cookies"] = sess["cookies"]
+
+    try:
+        res = requests.get(SPB, params=params, headers=headers_req, timeout=120)
+    except requests.Timeout:
+        raise HTTPException(502, "ScrapingBee timeout en consulta.")
+
+    if res.status_code >= 400:
+        raise HTTPException(502, f"ScrapingBee {res.status_code}: {res.text[:200]}")
+
+    html = res.text
+    if "Texto de seguridad incorrecto" in html or "captcha" in html.lower() and "incorrecto" in html.lower():
+        raise HTTPException(400, "El código de seguridad es incorrecto.")
+
+    soup = BeautifulSoup(html, "html.parser")
+    vehiculo = "Vehículo sin adeudos o no registrado en Veracruz"
+    adeudo = "$0.00"
+    for row in soup.find_all("tr"):
+        celdas = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+        if len(celdas) >= 2:
+            t = " ".join(celdas)
+            if "Vehículo" in t or "Modelo" in t or "Marca" in t:
+                vehiculo = celdas[1] or vehiculo
+            if "Total" in t or "Pagar" in t or "Adeudo" in t:
+                adeudo = celdas[1] or adeudo
+
+    return {"placa": placa, "vehiculo": vehiculo, "adeudo": adeudo, "estado": "Veracruz"}
