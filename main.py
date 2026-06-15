@@ -48,51 +48,63 @@ async def cors_interceptor_universal(request: Request, call_next):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "Servidor Centralizado - Modo Camuflaje Activo"}
+    return {"status": "ok", "message": "Servidor Centralizado - Rompemuros Activo"}
 
 @app.get("/api/veracruz/captcha")
 async def captcha_veracruz():
     if SCRAPINGBEE_API_KEY == "TU_API_KEY_AQUI" or not SCRAPINGBEE_API_KEY:
         raise HTTPException(status_code=500, detail="Falta la API Key de ScrapingBee.")
 
+    url_principal = "https://ovh.veracruz.gob.mx/ovh/consultavehicular"
     url_captcha = "https://ovh.veracruz.gob.mx/ovh/jcaptcha"
     spb_endpoint = "https://app.scrapingbee.com/api/v1/"
     
-    # 🕵️‍♂️ ESTRATEGIA DE CAMUFLAJE: 
-    # Desactivamos render_js para que Radware no detecte las funciones de automatización,
-    # y en su lugar inyectamos encabezados de comportamiento humano ultra-comunes.
     try:
+        # 💣 ACTIVACIÓN DE RESOLVEDOR DE CAPTCHAS NATIVO
+        # Este bloque obliga a ScrapingBee a romper el hCaptcha de Radware antes de entregarnos la página
+        params_inicio = {
+            "api_key": SCRAPINGBEE_API_KEY,
+            "url": url_principal,
+            "country_code": "mx",
+            "render_js": "true",          # Abre navegador invisible real
+            "premium_proxy": "true",       # Forzar IPs residenciales limpias
+            "solve_captcha": "true",       # <--- LA LLAVE MAESTRA: Resuelve el hCaptcha de Radware en automático
+            "forward_headers": "true"
+        }
+        
+        # Le damos un timeout de 60 segundos porque resolver el hCaptcha toma tiempo de procesamiento
+        res_inicio = requests.get(spb_endpoint, params=params_inicio, timeout=60)
+        
+        # Si a pesar de todo nos regresa el muro de hCaptcha de Radware, tiramos error controlado
+        if b"Radware Captcha Page" in res_inicio.content or b"hcaptcha" in res_inicio.content:
+            raise HTTPException(status_code=503, detail="ScrapingBee no logró resolver el hCaptcha de Radware a tiempo. Reintenta la ráfaga.")
+
+        cookies_dict = {}
+        if res_inicio.cookies:
+            for cookie in res_inicio.cookies:
+                cookies_dict[cookie.name] = cookie.value
+                
+        cookie_string = "; ".join([f"{k}={v}" for k, v in cookies_dict.items()])
+
+        # PASO B: Descargar la imagen real con el bypass de galletas activo
         params_captcha = {
             "api_key": SCRAPINGBEE_API_KEY,
             "url": url_captcha,
             "country_code": "mx",
+            "premium_proxy": "true",
             "forward_headers": "true"
         }
         
-        headers_stealth = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
-            "Accept-Language": "es-419,es;q=0.9,en;q=0.8",
-            "Sec-Fetch-Dest": "image",
-            "Sec-Fetch-Mode": "no-cors",
-            "Sec-Fetch-Site": "same-origin",
-            "Connection": "keep-alive"
+        headers_captcha = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Cookie": cookie_string
         }
         
-        res_captcha = requests.get(spb_endpoint, params=params_captcha, headers=headers_stealth, timeout=30)
+        res_captcha = requests.get(spb_endpoint, params=params_captcha, headers=headers_captcha, timeout=30)
         
-        # Si ScrapingBee se topa con Radware, nos daremos cuenta por el tipo de contenido
-        content_type = res_captcha.headers.get("Content-Type", "").lower()
-        if "html" in content_type or b"Radware" in res_captcha.content or b"<!DOCTYPE" in res_captcha.content[:50]:
-            raise HTTPException(status_code=502, detail="Radware bloqueó el acceso residencial. Por favor intenta de nuevo.")
+        if b"html" in res_captcha.content[:50] or b"<!DOCTYPE" in res_captcha.content[:50]:
+            raise HTTPException(status_code=502, detail="Radware interceptó la descarga final. Presiona recargar.")
 
-        # Si el contenido es una imagen real, extraemos las cookies que Veracruz le asignó a ScrapingBee
-        cookies_dict = {}
-        if res_captcha.cookies:
-            for cookie in res_captcha.cookies:
-                cookies_dict[cookie.name] = cookie.value
-                
-        # Estructuramos el formato Base64 limpio
         captcha_base64 = base64.b64encode(res_captcha.content).decode('utf-8')
         session_id = str(int(time.time()))
         sesiones_globales[session_id] = cookies_dict
@@ -107,7 +119,7 @@ async def captcha_veracruz():
     except HTTPException as he:
         raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Falla en el camuflaje del túnel: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error en procesamiento de Rompemuros: {str(e)}")
 
 @app.post("/api/veracruz/consultar")
 async def consultar_veracruz(req: ConsultaEstadoRequest):
@@ -133,22 +145,21 @@ async def consultar_veracruz(req: ConsultaEstadoRequest):
             "api_key": SCRAPINGBEE_API_KEY,
             "url": url_post,
             "country_code": "mx",
+            "render_js": "true",          # Forzamos render_js también al enviar para que ejecute el envío de forma humana
+            "premium_proxy": "true",
             "forward_headers": "true"
         }
         
         headers_post = {
             "Cookie": cookie_string,
             "Content-Type": "application/x-www-form-urlencoded",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-            "Origin": "https://ovh.veracruz.gob.mx",
-            "Referer": "https://ovh.veracruz.gob.mx/ovh/consultavehicular"
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
         }
         
-        response = requests.post(spb_endpoint, params=params_post, headers=headers_post, data=payload_encoded, timeout=40)
+        response = requests.post(spb_endpoint, params=params_post, headers=headers_post, data=payload_encoded, timeout=50)
         
-        # Validar si el post fue bloqueado por Radware
         if b"Radware" in response.content:
-            raise HTTPException(status_code=502, detail="El escudo bloqueó el envío de la consulta. Reintenta.")
+            raise HTTPException(status_code=502, detail="Radware bloqueó el envío final de datos.")
             
         from bs4 import BeautifulSoup
         soup = BeautifulSoup(response.text, "html.parser")
@@ -178,7 +189,7 @@ async def consultar_veracruz(req: ConsultaEstadoRequest):
     except HTTPException as he:
         raise he
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en consulta: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Error en consulta final: {str(e)}")
     finally:
         if id_sesion in sesiones_globales:
             del sesiones_globales[id_sesion]
