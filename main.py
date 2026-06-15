@@ -7,7 +7,7 @@ import json, time, random, urllib.parse
 
 app = FastAPI()
 
-# 🔑 TU NUEVA API KEY DE SCRAPINGBEE DE RESPALDO
+# 🔑 TU NUEVA API KEY DE SCRAPINGBEE ACTIVA
 SCRAPINGBEE_API_KEY = "LMYGEFZL35211YDJEFNK30DSG9CYRSMRYZ5JQUQTXW10WC3QO6GXJ7DPLNPEBF1EHWPIQ4FOCOFUA8IG"
 SPB = "https://app.scrapingbee.com/api/v1/"
 URL_OVH = "https://ovh.veracruz.gob.mx/ovh/consultavehicular"
@@ -39,64 +39,63 @@ async def cors(request: Request, call_next):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "Servidor Central - Operacion Veracruz Activa"}
+    return {"status": "ok", "message": "Servidor Central - Operacion Veracruz"}
 
 @app.get("/api/veracruz/captcha")
 async def captcha_veracruz():
-    # Identificador único numérico para congelar el nodo de IP en ScrapingBee
+    # Identificador único de sesión para fijar la IP proxy
     spb_session = random.randint(100000, 999999)
 
-    # 🕵️‍♂️ Promesa asíncrona avanzada en JS: Monitorea la presencia y carga real de los píxeles del captcha
+    # 🕵️‍♂️ Corrección de Sintaxis: Envolvemos la Promesa en un IIFE (() => { return ... })() 
+    # para que ScrapingBee espere correctamente a que Radware cargue la imagen antes de extraer el Canvas.
     js_extractor = """
-    new Promise((resolve) => {
-        var startTime = Date.now();
-        function checkImage() {
-            var img = document.querySelector("img[src*='jcaptcha']");
-            // Validamos que el elemento exista, esté completo y tenga dimensiones reales en pantalla
-            if (img && img.complete && img.naturalWidth > 0) {
-                var canvas = document.createElement("canvas");
-                canvas.width = img.naturalWidth;
-                canvas.height = img.naturalHeight;
-                var ctx = canvas.getContext("2d");
-                ctx.drawImage(img, 0, 0);
-                resolve(canvas.toDataURL("image/png"));
-            } else if (Date.now() - startTime > 15000) {
-                // Si pasan 15 segundos y Radware congeló el render gráfico, salimos con error
-                resolve("ERROR_TIMEOUT_RADWARE");
-            } else {
-                // Reintentar cíclicamente cada 400 milisegundos
-                setTimeout(checkImage, 400);
+    (() => {
+        return new Promise((resolve) => {
+            var startTime = Date.now();
+            function checkImage() {
+                var img = document.querySelector("img[src*='jcaptcha']");
+                if (img && img.complete && img.naturalWidth > 0) {
+                    var canvas = document.createElement("canvas");
+                    canvas.width = img.naturalWidth;
+                    canvas.height = img.naturalHeight;
+                    var ctx = canvas.getContext("2d");
+                    ctx.drawImage(img, 0, 0);
+                    resolve(canvas.toDataURL("image/png"));
+                } else if (Date.now() - startTime > 15000) {
+                    resolve("ERROR_TIMEOUT_RADWARE");
+                } else {
+                    setTimeout(checkImage, 400);
+                }
             }
-        }
-        checkImage();
-    });
+            checkImage();
+        });
+    })()
     """
 
+    # LIMPIEZA ABSOLUTA: Quitamos "stealth_proxy" para evitar el error 400 inmediato de ScrapingBee
     params = {
         "api_key": SCRAPINGBEE_API_KEY,
         "url": URL_OVH,
         "country_code": "mx",
         "render_js": "true",
-        "premium_proxy": "true",
-        "stealth_proxy": "true",       # Forzar algoritmos de camuflaje anti-Radware
-        "session_id": spb_session,     # Fija la IP residencial para el POST de la consulta
-        "evaluate": js_extractor       # ScrapingBee ejecutará la promesa y nos devolverá el texto puro
+        "premium_proxy": "true",       # Forzamos IPs residenciales mexicanas de alta reputación
+        "session_id": spb_session,     # Fija la IP para que el POST subsecuente no pierda la sesión
+        "evaluate": js_extractor       # ScrapingBee ejecutará este script y nos devolverá la respuesta limpia
     }
 
     try:
-        # Timeout preventivo extendido para darle tiempo a la promesa de ejecutarse sin prisa
+        # Ahora sí, el timeout de 65 segundos tendrá sentido porque ScrapingBee aceptará la petición
         res = requests.get(SPB, params=params, timeout=65)
     except requests.Timeout:
         raise HTTPException(502, "Tiempo de espera agotado con el proxy residencial premium.")
 
     if res.status_code >= 400:
-        raise HTTPException(502, f"Error de infraestructura residencial ({res.status_code}): {res.text[:150]}")
+        raise HTTPException(502, f"Error de pasarela ScrapingBee ({res.status_code}): {res.text[:150]}")
 
     captcha_b64 = res.text.strip()
 
-    # Si Radware ganó esta ronda y congeló la carga del elemento gráfico
     if "ERROR" in captcha_b64 or "data:image" not in captcha_b64:
-        raise HTTPException(502, "El escudo Radware interceptó la carga gráfica. Presiona recargar para rotar el nodo.")
+        raise HTTPException(502, "Radware bloqueó el renderizado del Canvas. Intenta de nuevo para rotar el nodo proxy.")
 
     session_id = str(int(time.time() * 1000))
     sesiones_globales[session_id] = {"spb_session": spb_session}
@@ -115,11 +114,10 @@ async def consultar_veracruz(req: ConsultaEstadoRequest):
     sess = sesiones_globales.get(sid)
     
     if not sess:
-        raise HTTPException(400, "La sesión de consulta expiró o es inválida. Recarga el captcha.")
+        raise HTTPException(400, "La sesión de consulta expiró. Recarga el captcha.")
 
     placa = req.placa.upper().strip()
 
-    # Escenario de inyección para rellenar campos y dar clic usando la misma máquina física
     js_scenario = {
         "instructions": [
             {"wait_for": "input[name='pPlaca']"},
@@ -129,18 +127,18 @@ async def consultar_veracruz(req: ConsultaEstadoRequest):
                 "''"
             )},
             {"click": "input[type='submit'], button[type='submit']"},
-            {"wait": 5000}, # Le damos 5 segundos enteros a SEFIPLAN para procesar y pintar la tabla
+            {"wait": 5000},
         ]
     }
 
+    # Limpieza de parámetros también en la consulta POST
     params = {
         "api_key": SCRAPINGBEE_API_KEY,
         "url": URL_OVH,
         "country_code": "mx",
         "render_js": "true",
         "premium_proxy": "true",
-        "stealth_proxy": "true",
-        "session_id": sess["spb_session"], # Clave absoluta: Usamos la misma IP exacta que generó el captcha
+        "session_id": sess["spb_session"], # Conexión exacta a la misma máquina física
         "js_scenario": json.dumps(js_scenario),
         "return_page_source": "true",
     }
@@ -148,7 +146,7 @@ async def consultar_veracruz(req: ConsultaEstadoRequest):
     try:
         res = requests.get(SPB, params=params, timeout=65)
     except requests.Timeout:
-        raise HTTPException(502, "Exceso de tiempo esperando respuesta del portal estatal.")
+        raise HTTPException(502, "Exceso de tiempo esperando respuesta del portal de Veracruz.")
 
     if res.status_code >= 400:
         raise HTTPException(502, f"Falla en comunicación de consulta: {res.text[:150]}")
