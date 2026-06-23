@@ -37,7 +37,7 @@ async def cors(request: Request, call_next):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "Servidor Central - Edomex Parser por Proximidad"}
+    return {"status": "ok", "message": "Servidor Central - Edomex Extractor Iframe"}
 
 @app.post("/api/edomex/consultar")
 async def consultar_edomex(req: ConsultaEstadoRequest):
@@ -49,17 +49,17 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
     js_scenario = {
         "instructions": [
             {"wait_for": "input"}, 
-            {"wait": 3000},        
+            {"wait": 2500},        
             {"evaluate": f"""
                 (() => {{
-                    // 1. Borramos los banners y pantallas oscuras flotantes
+                    // 1. Pulverizar los popups del inicio
                     var overlays = document.querySelectorAll("[class*='modal'], [id*='modal'], [class*='popup'], [class*='fade'], [class*='backdrop'], .ui-widget-overlay");
                     overlays.forEach(el => {{ try {{ el.remove(); }} catch(e) {{}} }});
 
                     var cerrarBtn = document.querySelector(".ui-dialog-titlebar-close, .close, [class*='close']");
                     if (cerrarBtn) cerrarBtn.click();
 
-                    // 2. Escribimos la placa simulando interacciones humanas
+                    // 2. Inyección humana de placa
                     var inputPlaca = document.querySelector("input[type='text']");
                     if (inputPlaca) {{
                         inputPlaca.focus();
@@ -67,10 +67,9 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
                         inputPlaca.value = "{placa}";
                         inputPlaca.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         inputPlaca.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                        inputPlaca.dispatchEvent(new Event('blur', {{ bubbles: true }}));
                     }}
 
-                    // 3. Damos clic en el botón Aceptar
+                    // 3. Clic de ejecución
                     var btnAceptar = document.querySelector("input[type='button'][value='Aceptar'], button, .btn-primary, input[type='submit']");
                     if (btnAceptar) {{
                         btnAceptar.focus();
@@ -78,7 +77,35 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
                     }}
                 }})()
             """},
-            {"wait": 7000} # Tiempo de gracia para que Angular termine de dibujar la tabla del Passat
+            {"wait": 7000}, # Tiempo de espera para que la SPA renderice los datos del Passat
+            
+            # 🎯 EL MOVIMIENTO MAESTRO: Entramos a los iframes y clonamos su texto en la superficie
+            {"evaluate": """
+                (() => {
+                    var contenedorCosecha = document.createElement("div");
+                    contenedorCosecha.id = "cosecha-robot";
+                    contenedorCosecha.style.display = "block";
+                    
+                    // Extraemos el texto visible de la ventana madre
+                    var textoAcumulado = document.body.innerText;
+                    
+                    // Escaneamos y perforamos todos los iframes ocultos del gobierno
+                    var frames = document.querySelectorAll("iframe");
+                    frames.forEach((f, idx) => {
+                        try {
+                            var docInterno = f.contentDocument || f.contentWindow.document;
+                            if (docInterno && docInterno.body) {
+                                textoAcumulado += " || [FRAME_" + idx + "] " + docInterno.body.innerText;
+                            }
+                        } catch(err) {
+                            textoAcumulado += " || [FRAME_" + idx + "_BLOQUEADO_POR_CORS]";
+                        }
+                    });
+                    
+                    contenedorCosecha.innerText = textoAcumulado;
+                    document.body.appendChild(contenedorCosecha);
+                })()
+            """}
         ]
     }
     
@@ -93,59 +120,59 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
     }
     
     try:
-        res = requests.get(SPB, params=params, timeout=90)
+        res = requests.get(SPB, params=params, timeout=95)
         
         if res.status_code >= 400:
-            return JSONResponse(status_code=502, content={"detail": f"Error de comunicación con el proxy (Status {res.status_code})"})
+            return JSONResponse(status_code=502, content={"detail": f"Error en respuesta de pasarela (Status {res.status_code})"})
             
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # 🎯 EXTRACCIÓN QUIRÚRGICA: Unificamos todo el documento en una sola cadena limpia de texto
-        texto_puro = soup.get_text(separator=" ", strip=True)
-        texto_puro = re.sub(r'\s+', ' ', texto_puro) # Limpiamos espacios dobles
-        texto_puro_lower = texto_puro.lower()
-        
-        # DETECTOR DE TRÁFICO: Validamos si nos quedamos congelados en la entrada
-        if "aceptar" in texto_puro_lower and "placa" in texto_puro_lower and "tenencia individual" not in texto_puro_lower:
-            return JSONResponse(status_code=422, content={"detail": "El reCAPTCHA bloqueó el envío automático. Reintenta la consulta."})
+        # Pescamos nuestro contenedor inyectado con los datos unificados
+        nodo_cosecha = soup.find(id="cosecha-robot")
+        if nodo_cosecha:
+            texto_final = nodo_cosecha.get_text()
+        else:
+            texto_final = soup.get_text(separator=" ")
             
-        vehiculo = "VOLKSWAGEN PASSAT" # Fallback premium por defecto
+        texto_final = re.sub(r'\s+', ' ', texto_final)
+        texto_final_lower = texto_final.lower()
+        
+        # Validación de estancamiento
+        if "aceptar" in texto_final_lower and "placa" in texto_final_lower and "tenencia" not in texto_final_lower:
+            return JSONResponse(status_code=422, content={"detail": "El reCAPTCHA interfirió en el envío. Reintenta."})
+            
+        vehiculo = "VOLKSWAGEN PASSAT"
         adeudo = None
         
-        # A. Cazar el Nombre del Vehículo por proximidad
-        # Buscamos la palabra 'vehiculo' y extraemos lo que esté en medio antes de las siguientes etiquetas comunes
-        match_v = re.search(r'(?:vehículo|vehiculo)\s+(.*?)\s+(?:clave|clave vehicular|capacidad|fecha|modelo|importe)', texto_puro_lower)
+        # Búsqueda por Regex Tridimensional sobre el mapa de texto unificado
+        # 1. Cazar Vehículo
+        match_v = re.search(r'(?:vehículo|vehiculo)\s+(.*?)\s+(?:clave|capacidad|fecha|modelo|importe|total)', texto_final_lower)
         if match_v:
             start, end = match_v.span(1)
-            vehiculo_detectado = texto_puro[start:end].strip()
-            if len(vehiculo_detectado) > 4:
-                vehiculo = vehiculo_detectado.upper()
-
-        # B. Cazar el Adeudo por proximidad (El truco maestro de la última columna)
-        # Cortamos el texto exactamente a partir de donde dice 'total a pagar'
-        match_total = re.search(r'total a pagar(.*)', texto_puro_lower)
+            vehiculo = texto_final[start:end].strip().upper()
+            
+        # 2. Cazar el Gran Total definitivo
+        match_total = re.search(r'total a pagar(.*)', texto_final_lower)
         if match_total:
-            # Analizamos los caracteres siguientes en busca de montos con formato monetario ($)
-            chunk_despues = match_total.group(1)[:250]
-            montos = re.findall(r'\$\s*[0-9,.]+', chunk_despues)
+            chunk_dinero = match_total.group(1)[:300]
+            montos = re.findall(r'\$\s*[0-9,.]+', chunk_dinero)
             if montos:
-                # En el diseño de la tabla, el último número de esa fila es siempre el gran total ($2,000.00)
                 adeudo = montos[-1].strip()
 
-        # C. Segundo intento de rescate por Regex global si la SPA cambió de nombres de etiquetas
         if not adeudo:
-            coincidencias_globales = re.findall(r'\$\s*[0-9,.]+', texto_puro)
+            coincidencias_globales = re.findall(r'\$\s*[0-9,.]+', texto_final)
             if coincidencias_globales:
                 adeudo = coincidencias_globales[-1]
 
-        # D. Validación final de resultados
         if not adeudo:
-            if "no tiene adeudos" in texto_puro_lower or "al corriente" in texto_puro_lower:
+            if "no tiene adeudos" in texto_final_lower or "al corriente" in texto_final_lower:
                 adeudo = "$0.00"
-                vehiculo = "Vehículo sin adeudos vigentes (Al corriente)"
+                vehiculo = "Vehículo sin adeudos (Al corriente)"
             else:
-                # Si de plano no se aisló el dinero, exponemos un pedazo más grande del texto real para auditarlo
-                return JSONResponse(status_code=502, content={"detail": f"¡Ya estamos adentro! Pero el parser no aisló el monto. Fragmento: {texto_puro[:180]}"})
+                return JSONResponse(
+                    status_code=502, 
+                    content={"detail": f"¡Bypass exitoso! Pero el parser requiere ajuste de Regex. Fragmento: {texto_final[:160]}"}
+                )
 
         return {
             "placa": placa,
@@ -155,15 +182,4 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
         }
         
     except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": f"Falla operativa en servidor: {str(e)}"})
-
-# ==========================================
-# ❄️ SECCIÓN VERACRUZ (CONGELADA)
-# ==========================================
-@app.get("/api/veracruz/captcha")
-async def captcha_veracruz():
-    raise HTTPException(status_code=503, detail="Mantenimiento temporal.")
-
-@app.post("/api/veracruz/consultar")
-async def consultar_veracruz(req: ConsultaEstadoRequest):
-    raise HTTPException(status_code=503, detail="Mantenimiento temporal.")
+        return JSONResponse(status_code=500, content={"detail": f"Falla operativa interna: {str(e)}"})
