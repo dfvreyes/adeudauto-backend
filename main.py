@@ -39,10 +39,10 @@ async def cors(request: Request, call_next):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "Servidor Central - Edomex Optimizada"}
+    return {"status": "ok", "message": "Servidor Central - Edomex Auditoria Activa"}
 
 # ==========================================
-# 🔥 SECCIÓN ESTADO DE MÉXICO (SOLUCIÓN REAL)
+# 🔥 SECCIÓN ESTADO DE MÉXICO (EXTRACTOR REAL)
 # ==========================================
 @app.post("/api/edomex/consultar")
 async def consultar_edomex(req: ConsultaEstadoRequest):
@@ -51,52 +51,52 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
         
     placa = req.placa.upper().strip()
     
-    # Escenario JS: Espera los campos, fulmina el banner de "Cumple hoy" borrándolo del HTML,
-    # rellena la placa de forma orgánica y presiona el botón "Aceptar".
+    # Escenario JS Refinado: Borra estorbos, simula clics humanos en el input para burlar 
+    # las validaciones del framework y ejecuta el click forzado en Aceptar.
     js_scenario = {
         "instructions": [
-            {"wait_for": "input"}, # Espera que cargue la estructura básica de Angular
-            {"wait": 4000},        # 4 segundos clave para que el banner termine de saltar en pantalla
+            {"wait_for": "input"}, 
+            {"wait": 3000},        
             {"evaluate": f"""
                 (() => {{
-                    // 1. BOMBA ATÓMICA AL BANNER: Borramos de la existencia cualquier modal,
-                    // pop-up, fade o elemento flotante que obstruya la pantalla (incluyendo el banner de 'Cumple hoy')
-                    var molestos = document.querySelectorAll("[class*='modal'], [id*='modal'], [class*='popup'], [class*='fade'], [class*='backdrop'], .ui-widget-overlay");
-                    molestos.forEach(el => {{
-                        try {{ el.remove(); }} catch(e) {{}}
-                    }});
+                    // 1. Eliminación radical del banner de 'Cumple hoy' y capas oscuras
+                    var overlays = document.querySelectorAll("[class*='modal'], [id*='modal'], [class*='popup'], [class*='fade'], [class*='backdrop'], .ui-widget-overlay");
+                    overlays.forEach(el => {{ try {{ el.remove(); }} catch(e) {{}} }});
 
-                    // Intentar hacer clic en cualquier botón de cerrar (X) por si acaso
                     var cerrarBtn = document.querySelector(".ui-dialog-titlebar-close, .close, [class*='close']");
                     if (cerrarBtn) cerrarBtn.click();
 
-                    // 2. BUSCAR EL INPUT DE LA PLACA
+                    // 2. Selección del campo de placa con simulación de foco humano
                     var inputPlaca = document.querySelector("input[type='text']");
                     if (inputPlaca) {{
+                        inputPlaca.focus();
+                        inputPlaca.click();
                         inputPlaca.value = "{placa}";
-                        // Disparar eventos para que el framework de Angular se entere del cambio de texto
+                        
+                        // Forzado de eventos nativos para engañar los candados del formulario
                         inputPlaca.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         inputPlaca.dispatchEvent(new Event('change', {{ bubbles: true }}));
+                        inputPlaca.dispatchEvent(new Event('blur', {{ bubbles: true }}));
                     }}
 
-                    // 3. SELECCIONAR Y SELLO AL BOTÓN "ACEPTAR"
-                    var btnAceptar = document.querySelector("input[type='button'][value='Aceptar'], button, .btn-primary");
+                    // 3. Ubicar y ejecutar clic en el botón de Aceptar
+                    var btnAceptar = document.querySelector("input[type='button'][value='Aceptar'], button, .btn-primary, input[type='submit']");
                     if (btnAceptar) {{
+                        btnAceptar.focus();
                         btnAceptar.click();
                     }}
                 }})()
             """},
-            {"wait": 5000} # Esperamos 5 segundos a que refresque la pantalla con los adeudos reales
+            {"wait": 6000} # Damos 6 segundos enteros para que procese la consulta y cargue los adeudos
         ]
     }
     
-    # PARAMETROS TOTALMENTE LIMPIOS (Eliminado solve_captcha que causaba el HTTP 400)
     params = {
         "api_key": SCRAPINGBEE_API_KEY,
         "url": URL_EDOMEX,
         "country_code": "mx",
         "render_js": "true",
-        "premium_proxy": "true", # Mantiene la IP residencial MX para pasar el reCAPTCHA de forma transparente
+        "premium_proxy": "true", # Obligatorio para camuflar la IP contra el reCAPTCHA
         "js_scenario": json.dumps(js_scenario),
         "return_page_source": "true"
     }
@@ -107,27 +107,50 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
         if res.status_code >= 400:
             return JSONResponse(
                 status_code=502,
-                content={"detail": f"Portal Edomex no disponible (Proxy Status {res.status_code}): {res.text[:100]}"}
+                content={"detail": f"Error en túnel de ScrapingBee (Status {res.status_code})"}
             )
             
         soup = BeautifulSoup(res.text, "html.parser")
         texto_completo = soup.get_text()
         
-        vehiculo = "Vehículo registrado (Estado de México)"
-        adeudo = "$0.00"
+        # DETECTOR DE MENTIRAS: Si seguimos viendo el botón 'Aceptar', significa que la página NO avanzó
+        if "Aceptar" in texto_completo and "Placa" in texto_completo and "Total a Pagar" not in texto_completo:
+            return JSONResponse(
+                status_code=422,
+                content={"detail": "El portal de Edomex rechazó el envío automático o el reCAPTCHA bloqueó el clic. Intenta de nuevo."}
+            )
+            
+        vehiculo = "Vehículo Identificado (Estado de México)"
+        adeudo = None
         
-        # Extracción inteligente examinando el texto plano y tablas resultantes
-        if "total a pagar" in texto_completo.lower() or "importe" in texto_completo.lower():
-            for row in soup.find_all("tr"):
-                celdas = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
-                if len(celdas) >= 2:
-                    t = " ".join(celdas).lower()
-                    if "total" in t or "importe" in t or "pagar" in t:
-                        adeudo = celdas[1] if len(celdas[1]) > 1 else celdas[0]
-                        break
-        elif "no tiene adeudos" in texto_completo.lower() or "al corriente" in texto_completo.lower():
-            adeudo = "$0.00"
-            vehiculo = "Vehículo sin adeudos vigentes (Al corriente)"
+        # Busqueda quirúrgica en las celdas de las tablas de adeudos
+        for row in soup.find_all("tr"):
+            celdas = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
+            if len(celdas) < 2:
+                continue
+                
+            primera_celda = celdas[0].strip().lower()
+            texto_fila = " ".join(celdas).lower()
+            
+            if "vehículo" in primera_celda or "vehiculo" in primera_celda:
+                vehiculo = celdas[1].strip()
+            
+            if "total a pagar" in texto_fila:
+                celdas_limpias = [c.strip() for c in celdas if c.strip()]
+                if celdas_limpias:
+                    adeudo = celdas_limpias[-1] # Pescamos el valor de la última columna ($2,000.00)
+
+        # Si el flujo pasó pero por alguna razón el parser no leyó el monto
+        if adeudo is None:
+            if "no tiene adeudos" in texto_completo.lower() or "al corriente" in texto_completo.lower():
+                adeudo = "$0.00"
+                vehiculo = "Vehículo sin adeudos vigentes"
+            else:
+                # Si estamos en la página correcta pero las celdas cambiaron de nombre, exponemos un fragmento del texto
+                return JSONResponse(
+                    status_code=502,
+                    content={"detail": f"Logramos entrar al Passat pero cambió la estructura del HTML. Texto visto: {texto_completo[:120]}"}
+                )
 
         return {
             "placa": placa,
@@ -139,7 +162,7 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
     except Exception as e:
         return JSONResponse(
             status_code=500,
-            content={"detail": f"Error crítico en backend Edomex: {str(e)}"}
+            content={"detail": f"Falla en lectura del HTML: {str(e)}"}
         )
 
 # ==========================================
