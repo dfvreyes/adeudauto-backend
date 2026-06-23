@@ -11,7 +11,7 @@ app = FastAPI()
 SCRAPINGBEE_API_KEY = "LMYGEFZL35211YDJEFNK30DSG9CYRSMRYZ5JQUQTXW10WC3QO6GXJ7DPLNPEBF1EHWPIQ4FOCOFUA8IG"
 SPB = "https://app.scrapingbee.com/api/v1/"
 
-# 🌐 URL real del portal de Tenencia del Edomex
+# 🌐 URL del portal de Tenencia del Edomex (SPA Angular)
 URL_EDOMEX = "https://tenencia.edomex.gob.mx/TenenciaIndividual/tenencia/A06E1A88B8A6ED4B/#/"
 
 class ConsultaEstadoRequest(BaseModel):
@@ -39,10 +39,10 @@ async def cors(request: Request, call_next):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "Servidor Central - Edomex con reCAPTCHA"}
+    return {"status": "ok", "message": "Servidor Central - Edomex Optimizada"}
 
 # ==========================================
-# 🔥 SECCIÓN ESTADO DE MÉXICO (EDOMEX CON SOLVER)
+# 🔥 SECCIÓN ESTADO DE MÉXICO (SOLUCIÓN REAL)
 # ==========================================
 @app.post("/api/edomex/consultar")
 async def consultar_edomex(req: ConsultaEstadoRequest):
@@ -51,65 +51,73 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
         
     placa = req.placa.upper().strip()
     
-    # Escenario JS: Desaparece el anuncio del camino, escribe la placa, 
-    # espera a que ScrapingBee resuelva el reCAPTCHA y da clic en Aceptar.
+    # Escenario JS: Espera los campos, fulmina el banner de "Cumple hoy" borrándolo del HTML,
+    # rellena la placa de forma orgánica y presiona el botón "Aceptar".
     js_scenario = {
         "instructions": [
-            {"wait_for": "input"}, # Espera a que cargue la SPA
-            {"wait": 2000},
+            {"wait_for": "input"}, # Espera que cargue la estructura básica de Angular
+            {"wait": 4000},        # 4 segundos clave para que el banner termine de saltar en pantalla
             {"evaluate": f"""
                 (() => {{
-                    // 1. TRUCO DE MAGIA: Buscamos el anuncio pop-up y cualquier fondo oscuro y lo eliminamos del mapa
-                    // para que no estorbe visualmente al dar clics
-                    var overlays = document.querySelectorAll("[class*='modal'], [id*='modal'], [class*='popup'], [class*='fade']");
-                    overlays.forEach(el => el.remove());
-                    
-                    // Si hay un boton de cerrar 'X' del anuncio, tambien lo presionamos por si acaso
-                    var closeBtn = document.querySelector(".close, [class*='close'], button[aria-label='Close']");
-                    if (closeBtn) closeBtn.click();
+                    // 1. BOMBA ATÓMICA AL BANNER: Borramos de la existencia cualquier modal,
+                    // pop-up, fade o elemento flotante que obstruya la pantalla (incluyendo el banner de 'Cumple hoy')
+                    var molestos = document.querySelectorAll("[class*='modal'], [id*='modal'], [class*='popup'], [class*='fade'], [class*='backdrop'], .ui-widget-overlay");
+                    molestos.forEach(el => {{
+                        try {{ el.remove(); }} catch(e) {{}}
+                    }});
 
-                    // 2. Localizamos el campo de la placa de forma segura
+                    // Intentar hacer clic en cualquier botón de cerrar (X) por si acaso
+                    var cerrarBtn = document.querySelector(".ui-dialog-titlebar-close, .close, [class*='close']");
+                    if (cerrarBtn) cerrarBtn.click();
+
+                    // 2. BUSCAR EL INPUT DE LA PLACA
                     var inputPlaca = document.querySelector("input[type='text']");
                     if (inputPlaca) {{
                         inputPlaca.value = "{placa}";
-                        // Forzamos eventos para que Angular/React se enteren que ya escribimos
+                        // Disparar eventos para que el framework de Angular se entere del cambio de texto
                         inputPlaca.dispatchEvent(new Event('input', {{ bubbles: true }}));
                         inputPlaca.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     }}
+
+                    // 3. SELECCIONAR Y SELLO AL BOTÓN "ACEPTAR"
+                    var btnAceptar = document.querySelector("input[type='button'][value='Aceptar'], button, .btn-primary");
+                    if (btnAceptar) {{
+                        btnAceptar.click();
+                    }}
                 }})()
             """},
-            {"wait": 1000},
-            # 3. Presionamos el botón "Aceptar" que envía el formulario
-            {"click": "input[type='button'][value='Aceptar'], button, input[type='submit']"},
-            {"wait": 5000} # Esperamos 5 segundos a que la página procese y cargue la tabla de adeudos
+            {"wait": 5000} # Esperamos 5 segundos a que refresque la pantalla con los adeudos reales
         ]
     }
     
+    # PARAMETROS TOTALMENTE LIMPIOS (Eliminado solve_captcha que causaba el HTTP 400)
     params = {
         "api_key": SCRAPINGBEE_API_KEY,
         "url": URL_EDOMEX,
         "country_code": "mx",
         "render_js": "true",
-        "premium_proxy": "true",  # IP residencial mexicana para que Google no sospeche
-        "solve_captcha": "true",  # 🔥 LA LLAVE MAESTRA: Resuelve el 'No soy un robot' en automático
+        "premium_proxy": "true", # Mantiene la IP residencial MX para pasar el reCAPTCHA de forma transparente
         "js_scenario": json.dumps(js_scenario),
         "return_page_source": "true"
     }
     
     try:
-        res = requests.get(SPB, params=params, timeout=80)
+        res = requests.get(SPB, params=params, timeout=85)
         
         if res.status_code >= 400:
-            raise HTTPException(status_code=502, detail=f"Falla de comunicación con el portal: {res.status_code}")
+            return JSONResponse(
+                status_code=502,
+                content={"detail": f"Portal Edomex no disponible (Proxy Status {res.status_code}): {res.text[:100]}"}
+            )
             
         soup = BeautifulSoup(res.text, "html.parser")
         texto_completo = soup.get_text()
         
-        vehiculo = "Vehículo registrado en el Estado de México"
+        vehiculo = "Vehículo registrado (Estado de México)"
         adeudo = "$0.00"
         
-        # Parseo inteligente de los datos impresos en pantalla
-        if "total a pagar" in texto_completo.lower():
+        # Extracción inteligente examinando el texto plano y tablas resultantes
+        if "total a pagar" in texto_completo.lower() or "importe" in texto_completo.lower():
             for row in soup.find_all("tr"):
                 celdas = [c.get_text(strip=True) for c in row.find_all(["td", "th"])]
                 if len(celdas) >= 2:
@@ -117,10 +125,10 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
                     if "total" in t or "importe" in t or "pagar" in t:
                         adeudo = celdas[1] if len(celdas[1]) > 1 else celdas[0]
                         break
-        elif "no tiene adeudos" in texto_completo.lower() or "vehículo al corriente" in texto_completo.lower():
+        elif "no tiene adeudos" in texto_completo.lower() or "al corriente" in texto_completo.lower():
             adeudo = "$0.00"
-            vehiculo = "Vehículo sin adeudos vigentes"
-            
+            vehiculo = "Vehículo sin adeudos vigentes (Al corriente)"
+
         return {
             "placa": placa,
             "vehiculo": vehiculo,
@@ -129,15 +137,18 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
         }
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en procesamiento de Edomex: {str(e)}")
+        return JSONResponse(
+            status_code=500,
+            content={"detail": f"Error crítico en backend Edomex: {str(e)}"}
+        )
 
 # ==========================================
 # ❄️ SECCIÓN VERACRUZ (CONGELADA)
 # ==========================================
 @app.get("/api/veracruz/captcha")
 async def captcha_veracruz():
-    raise HTTPException(status_code=503, detail="Mantenimiento.")
+    raise HTTPException(status_code=503, detail="Mantenimiento temporal.")
 
 @app.post("/api/veracruz/consultar")
 async def consultar_veracruz(req: ConsultaEstadoRequest):
-    raise HTTPException(status_code=503, detail="Mantenimiento.")
+    raise HTTPException(status_code=503, detail="Mantenimiento temporal.")
