@@ -37,7 +37,7 @@ async def cors(request: Request, call_next):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "Servidor Central - Edomex Simplificado"}
+    return {"status": "ok", "message": "Servidor Central - Edomex Instrucciones Nativas"}
 
 @app.post("/api/edomex/consultar")
 async def consultar_edomex(req: ConsultaEstadoRequest):
@@ -46,39 +46,14 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
         
     placa = req.placa.upper().strip()
     
-    # ⚡ ESCENARIO ULTRA-ESTABLE: Solo limpia pantallas, escribe y da clic. Sin procesos raros.
+    # ⚡ COMANDOS NATIVOS: Cero JavaScript invasivo. Usamos el motor puro de ScrapingBee
+    # para escribir en el input de texto y presionar el botón de Aceptar de forma infalible.
     js_scenario = {
         "instructions": [
-            {"wait_for": "input"}, 
-            {"wait": 2000},        
-            {"evaluate": f"""
-                (() => {{
-                    // Borramos el banner de 'Cumple hoy' para liberar espacio
-                    var overlays = document.querySelectorAll("[class*='modal'], [id*='modal'], [class*='popup'], [class*='fade'], [class*='backdrop'], .ui-widget-overlay");
-                    overlays.forEach(el => {{ try {{ el.remove(); }} catch(e) {{}} }});
-
-                    var cerrarBtn = document.querySelector(".ui-dialog-titlebar-close, .close, [class*='close']");
-                    if (cerrarBtn) cerrarBtn.click();
-
-                    // Rellenamos la placa de forma limpia
-                    var inputPlaca = document.querySelector("input[type='text']");
-                    if (inputPlaca) {{
-                        inputPlaca.focus();
-                        inputPlaca.click();
-                        inputPlaca.value = "{placa}";
-                        inputPlaca.dispatchEvent(new Event('input', {{ bubbles: true }}));
-                        inputPlaca.dispatchEvent(new Event('change', {{ bubbles: true }}));
-                    }}
-
-                    // Clic en Aceptar
-                    var btnAceptar = document.querySelector("input[type='button'][value='Aceptar'], button, .btn-primary, input[type='submit']");
-                    if (btnAceptar) {{
-                        btnAceptar.focus();
-                        btnAceptar.click();
-                    }}
-                }})()
-            """},
-            {"wait": 7000} # Espera completa para que se dibuje la SPA del Passat
+            {"wait_for": "input[type='text'], input"}, 
+            {"fill": ["input[type='text']", placa]}, 
+            {"click": "input[type='button'][value='Aceptar'], button, .btn-primary"},
+            {"wait": 8000} # 8 segundos completos para que Angular termine de pintar los adeudos
         ]
     }
     
@@ -93,49 +68,48 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
     }
     
     try:
-        res = requests.get(SPB, params=params, timeout=90)
+        res = requests.get(SPB, params=params, timeout=95)
         
         if res.status_code >= 400:
-            return JSONResponse(status_code=502, content={"detail": f"Error de pasarela de red (Proxy Status {res.status_code})"})
+            return JSONResponse(
+                status_code=502, 
+                content={"detail": f"Error de comunicación de red con ScrapingBee (Proxy Status {res.status_code})"}
+            )
             
         soup = BeautifulSoup(res.text, "html.parser")
-        
-        # Unificamos todo el texto plano que nos devolvió el navegador
         texto_completo = soup.get_text(separator=" ", strip=True)
         texto_completo = re.sub(r'\s+', ' ', texto_completo)
         texto_lower = texto_completo.lower()
         
-        # Verificación de estancamiento en el login
+        # Validador de estancamiento: Si seguimos viendo el login inicial
         if "aceptar" in texto_lower and "placa" in texto_lower and "individual" not in texto_lower:
-            return JSONResponse(status_code=422, content={"detail": "El reCAPTCHA interfirió en el clic. Reintenta la consulta."})
+            return JSONResponse(
+                status_code=422, 
+                content={"detail": "El reCAPTCHA bloqueó el acceso automático. Por favor reintenta."}
+            )
             
         vehiculo = "VOLKSWAGEN PASSAT"
         adeudo = None
         
-        # 🎯 EXTRACCIÓN MONETARIA POR PROXIMIDAD EN PYTHON
-        # Buscamos el texto 'total a pagar' y analizamos los caracteres que le siguen inmediatamente
-        match_total = re.search(r'total a pagar(.*)', texto_lower)
-        if match_total:
-            chunk_interes = match_total.group(1)[:250]
-            # Extraemos todos los formatos de dinero ($) en ese fragmento
-            montos = re.findall(r'\$\s*[0-9,.]+', chunk_interes)
-            if montos:
-                # Siguiendo la tabla del Edomex (Subsidio $0.00 | Total $2,000.00), el último monto es el real
-                adeudo = montos[-1].strip()
-                
-        # Fallback definitivo: Si no leyó el fragmento, jala el último monto con signo de pesos de toda la página
-        if not adeudo:
-            montos_globales = re.findall(r'\$\s*[0-9,.]+', texto_completo)
-            if montos_globales:
-                adeudo = montos_globales[-1].strip()
+        # 🎯 PARSER POR BARRIDO GLOBAL (Inmune a cambios de diseño)
+        # Extraemos todos los montos con formato de dinero ($) impresos en la pantalla
+        montos_detectados = re.findall(r'\$\s*[0-9,.]+', texto_completo)
+        
+        if montos_detectados:
+            # Heurística de Finanzas: El último monto al final de la página siempre es el Gran Total a Pagar
+            adeudo = montos_detectados[-1].strip()
 
-        # Validación final del saldo
+        # Si el vehículo está al corriente y no se generó ninguna tabla de cobro
         if not adeudo:
-            if "no tiene adeudos" in texto_lower or "al corriente" in texto_lower:
+            if "no tiene adeudos" in texto_lower or "al corriente" in texto_lower or "no presenta adeudos" in texto_lower:
                 adeudo = "$0.00"
-                vehiculo = "Vehículo sin adeudos vigentes"
+                vehiculo = "Vehículo sin adeudos vigentes (Al corriente)"
             else:
-                return JSONResponse(status_code=502, content={"detail": f"¡Entramos al portal! Pero la SPA ocultó los montos. Texto visto: {texto_completo[:140]}"})
+                # Si entramos al portal pero de verdad no pudimos jalar el texto, exponemos el pedazo crudo
+                return JSONResponse(
+                    status_code=502, 
+                    content={"detail": f"¡Entramos con éxito! Pero el texto no se leyó bien. Texto visto: {texto_completo[:140]}"}
+                )
 
         return {
             "placa": placa,
@@ -145,7 +119,10 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
         }
         
     except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": f"Falla en el servidor central: {str(e)}"})
+        return JSONResponse(
+            status_code=500, 
+            content={"detail": f"Error crítico de procesamiento: {str(e)}"}
+        )
 
 # ==========================================
 # ❄️ SECCIÓN VERACRUZ (CONGELADA)
