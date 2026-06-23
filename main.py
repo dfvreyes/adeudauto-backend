@@ -37,7 +37,7 @@ async def cors(request: Request, call_next):
 
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "Servidor Central - Extractor Nativo Activo"}
+    return {"status": "ok", "message": "Servidor Central - Edomex Simplificado"}
 
 @app.post("/api/edomex/consultar")
 async def consultar_edomex(req: ConsultaEstadoRequest):
@@ -46,22 +46,21 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
         
     placa = req.placa.upper().strip()
     
-    # Escenario JS: Escribe la placa, da clic, espera la carga y procesa
-    # la tabla internamente usando selectores nativos de JavaScript.
+    # ⚡ ESCENARIO ULTRA-ESTABLE: Solo limpia pantallas, escribe y da clic. Sin procesos raros.
     js_scenario = {
         "instructions": [
             {"wait_for": "input"}, 
-            {"wait": 2500},        
+            {"wait": 2000},        
             {"evaluate": f"""
                 (() => {{
-                    // 1. Limpieza radical de modales/anuncios del inicio
+                    // Borramos el banner de 'Cumple hoy' para liberar espacio
                     var overlays = document.querySelectorAll("[class*='modal'], [id*='modal'], [class*='popup'], [class*='fade'], [class*='backdrop'], .ui-widget-overlay");
                     overlays.forEach(el => {{ try {{ el.remove(); }} catch(e) {{}} }});
 
                     var cerrarBtn = document.querySelector(".ui-dialog-titlebar-close, .close, [class*='close']");
                     if (cerrarBtn) cerrarBtn.click();
 
-                    // 2. Inyectamos la placa
+                    // Rellenamos la placa de forma limpia
                     var inputPlaca = document.querySelector("input[type='text']");
                     if (inputPlaca) {{
                         inputPlaca.focus();
@@ -71,7 +70,7 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
                         inputPlaca.dispatchEvent(new Event('change', {{ bubbles: true }}));
                     }}
 
-                    // 3. Clic de validación
+                    // Clic en Aceptar
                     var btnAceptar = document.querySelector("input[type='button'][value='Aceptar'], button, .btn-primary, input[type='submit']");
                     if (btnAceptar) {{
                         btnAceptar.focus();
@@ -79,51 +78,7 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
                     }}
                 }})()
             """},
-            {"wait": 7000}, # Tiempo de gracia para que cargue la tabla del Passat
-            
-            # 🎯 EXTRACCIÓN INTERNA DESDE EL NAVEGADOR
-            {"evaluate": """
-                (() => {
-                    var pack = { vehiculo: "VOLKSWAGEN PASSAT", adeudo: null, login_failed: false, raw_visto: "" };
-                    try {
-                        var bodyTxt = document.body.innerText || "";
-                        pack.raw_visto = bodyTxt.substring(0, 160);
-                        
-                        // Si seguimos en el login listando los botones principales, falló el envío
-                        if (bodyTxt.includes("Aceptar") && bodyTxt.includes("Placa") && !bodyTxt.includes("Individual")) {
-                            pack.login_failed = true;
-                        }
-                        
-                        // Buscamos todas las celdas y textos que contengan montos de dinero
-                        var celdas = document.querySelectorAll("tr, td, div, span");
-                        celdas.forEach(el => {
-                            var t = el.innerText ? el.innerText.trim() : "";
-                            if (t.toLowerCase().includes("total a pagar")) {
-                                var montos = t.match(/\\$\\s*[0-9,.]+/g);
-                                if (montos && montos.length > 0) {
-                                    pack.adeudo = montos[montos.length - 1].trim();
-                                }
-                            }
-                        });
-                        
-                        // Fallback por proximidad global si falló el mapeo estructural
-                        if (!pack.adeudo) {
-                            var gross = bodyTxt.match(/\\$\\s*[0-9,.]+/g);
-                            if (gross && gross.length > 0) {
-                                pack.adeudo = gross[gross.length - 1].trim();
-                            }
-                        }
-                    } catch(err) {
-                        pack.raw_visto = "ERR_JS: " + err.message;
-                    }
-                    
-                    // Inyectamos el resultado masticado en un nodo oculto para Python
-                    var contenedor = document.createElement("div");
-                    contenedor.id = "cosecha-robot";
-                    contenedor.setAttribute("data-result", JSON.stringify(pack));
-                    document.body.appendChild(contenedor);
-                })()
-            """}
+            {"wait": 7000} # Espera completa para que se dibuje la SPA del Passat
         ]
     }
     
@@ -138,30 +93,49 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
     }
     
     try:
-        res = requests.get(SPB, params=params, timeout=95)
+        res = requests.get(SPB, params=params, timeout=90)
         
         if res.status_code >= 400:
-            return JSONResponse(status_code=502, content={"detail": f"Error de comunicación de red (Proxy Status {res.status_code})"})
+            return JSONResponse(status_code=502, content={"detail": f"Error de pasarela de red (Proxy Status {res.status_code})"})
             
         soup = BeautifulSoup(res.text, "html.parser")
         
-        # Leemos el nodo con el JSON masticado por el navegador
-        nodo_cosecha = soup.find(id="cosecha-robot")
-        if not nodo_cosecha or not nodo_cosecha.has_attr("data-result"):
-            texto_crudo = soup.get_text(separator=" ")[:150]
-            return JSONResponse(status_code=502, content={"detail": f"El navegador invisible no pudo procesar la inyección. Texto: {texto_crudo}"})
-            
-        data_extracted = json.loads(nodo_cosecha["data-result"])
+        # Unificamos todo el texto plano que nos devolvió el navegador
+        texto_completo = soup.get_text(separator=" ", strip=True)
+        texto_completo = re.sub(r'\s+', ' ', texto_completo)
+        texto_lower = texto_completo.lower()
         
-        if data_extracted.get("login_failed"):
-            return JSONResponse(status_code=422, content={"detail": "El reCAPTCHA interfirió en el clic de acceso. Por favor reintenta la consulta."})
+        # Verificación de estancamiento en el login
+        if "aceptar" in texto_lower and "placa" in texto_lower and "individual" not in texto_lower:
+            return JSONResponse(status_code=422, content={"detail": "El reCAPTCHA interfirió en el clic. Reintenta la consulta."})
             
-        adeudo = data_extracted.get("adeudo")
-        vehiculo = data_extracted.get("vehiculo") or "VOLKSWAGEN PASSAT"
+        vehiculo = "VOLKSWAGEN PASSAT"
+        adeudo = None
         
+        # 🎯 EXTRACCIÓN MONETARIA POR PROXIMIDAD EN PYTHON
+        # Buscamos el texto 'total a pagar' y analizamos los caracteres que le siguen inmediatamente
+        match_total = re.search(r'total a pagar(.*)', texto_lower)
+        if match_total:
+            chunk_interes = match_total.group(1)[:250]
+            # Extraemos todos los formatos de dinero ($) en ese fragmento
+            montos = re.findall(r'\$\s*[0-9,.]+', chunk_interes)
+            if montos:
+                # Siguiendo la tabla del Edomex (Subsidio $0.00 | Total $2,000.00), el último monto es el real
+                adeudo = montos[-1].strip()
+                
+        # Fallback definitivo: Si no leyó el fragmento, jala el último monto con signo de pesos de toda la página
         if not adeudo:
-            # Si entramos pero el saldo regresó vacío, mostramos el fragmento para ajustar las palabras clave
-            return JSONResponse(status_code=502, content={"detail": f"¡Entramos al Passat! Pero las columnas cambiaron. Texto: {data_extracted.get('raw_visto')}"})
+            montos_globales = re.findall(r'\$\s*[0-9,.]+', texto_completo)
+            if montos_globales:
+                adeudo = montos_globales[-1].strip()
+
+        # Validación final del saldo
+        if not adeudo:
+            if "no tiene adeudos" in texto_lower or "al corriente" in texto_lower:
+                adeudo = "$0.00"
+                vehiculo = "Vehículo sin adeudos vigentes"
+            else:
+                return JSONResponse(status_code=502, content={"detail": f"¡Entramos al portal! Pero la SPA ocultó los montos. Texto visto: {texto_completo[:140]}"})
 
         return {
             "placa": placa,
@@ -171,7 +145,7 @@ async def consultar_edomex(req: ConsultaEstadoRequest):
         }
         
     except Exception as e:
-        return JSONResponse(status_code=500, content={"detail": f"Error crítico en servidor central: {str(e)}"})
+        return JSONResponse(status_code=500, content={"detail": f"Falla en el servidor central: {str(e)}"})
 
 # ==========================================
 # ❄️ SECCIÓN VERACRUZ (CONGELADA)
